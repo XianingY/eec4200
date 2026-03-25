@@ -1,0 +1,27 @@
+# Python cache and build artifacts
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+
+# Local environments
+.venv/
+venv/
+
+# Experiment outputs
+outputs/
+outputs_final/
+outputs_verify/
+outputs_gpu_dryrun/
+outputs_gpu_dryrun2/
+*.log
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Large local dataset directories
+src/ARID/
+src/HMDB51/
