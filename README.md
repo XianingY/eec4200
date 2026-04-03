@@ -86,3 +86,17 @@ DRY_RUN=1 scripts/run_full_gpu_pipeline.sh
 - `outputs/metrics/`: JSON and CSV metrics
 - `outputs/figures/`: learning curves, confusion matrices, and sample-frame grids
 - `outputs/report/`: generated Markdown and PDF report
+
+## Experiment Results (RTX 5090, seed=42)
+
+| Experiment | Accuracy | Macro F1 | Notes |
+|---|---|---|---|
+| HMDB51-mini test | 44.58% | 43.13% | 23 epochs (early stopped @ 18), 445/111/240 split |
+| ARID-mini zero-shot | 13.82% | 5.09% | HMDB checkpoint, 1289 test samples |
+| ARID-mini fine-tuned | 20.31% | 17.68% | CLAHE + photometric aug + class-balanced sampling, 128 test samples |
+
+**Key findings**:
+- HMDB51-mini is class-balanced (70 train / 30 test per class); ARID-mini is heavily imbalanced
+- ARID brightness median (10.1) is ~6.7x lower than HMDB (67.6), confirming severe low-light domain shift
+- Zero-shot transfer drops from 44.58% → 13.82%, demonstrating significant domain gap
+- Fine-tuning with illumination-aware preprocessing recovers to 20.31% (+6.5pp over zero-shot)
