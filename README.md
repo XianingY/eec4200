@@ -93,10 +93,11 @@ DRY_RUN=1 scripts/run_full_gpu_pipeline.sh
 |---|---|---|---|
 | HMDB51-mini test | 44.58% | 43.13% | 23 epochs (early stopped @ 18), 445/111/240 split |
 | ARID-mini zero-shot | 13.82% | 5.09% | HMDB checkpoint, 1289 test samples |
-| ARID-mini fine-tuned | 20.31% | 17.68% | CLAHE + photometric aug + class-balanced sampling, 128 test samples |
+| ARID-mini fine-tuned | 18.56% | 16.19% | CLAHE + photometric aug + class-balanced sampling, 1289 test samples (full) |
 
 **Key findings**:
 - HMDB51-mini is class-balanced (70 train / 30 test per class); ARID-mini is heavily imbalanced
 - ARID brightness median (10.1) is ~6.7x lower than HMDB (67.6), confirming severe low-light domain shift
 - Zero-shot transfer drops from 44.58% → 13.82%, demonstrating significant domain gap
-- Fine-tuning with illumination-aware preprocessing recovers to 20.31% (+6.5pp over zero-shot)
+- Fine-tuning with illumination-aware preprocessing recovers to 18.56% (+4.7pp over zero-shot) on full 1289 test samples
+- Best-performing ARID classes after fine-tuning: `wave` (58.19%), `pour` (35.29%), `pick` (26.09%)
