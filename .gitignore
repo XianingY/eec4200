@@ -11,10 +11,14 @@ venv/
 # Experiment outputs
 outputs/
 outputs_final/
+outputs_opt/
 outputs_verify/
 outputs_gpu_dryrun/
 outputs_gpu_dryrun2/
 *.log
+
+# Temporary training scripts
+run_arid_*.py
 
 # OS and editor files
 .DS_Store

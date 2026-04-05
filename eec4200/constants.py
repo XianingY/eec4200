@@ -35,19 +35,57 @@ DEFAULT_CLIP_LENGTH = 16
 DEFAULT_TEST_CLIPS = 3
 
 HMDB_TRAINING_DEFAULTS = {
-    "epochs": 30,
+    "epochs": 50,
     "lr": 1e-3,
     "weight_decay": 1e-4,
-    "dropout": 0.4,
-    "patience": 5,
+    "dropout": 0.5,
+    "patience": 10,
     "batch_size": 8,
 }
 
 ARID_TRAINING_DEFAULTS = {
-    "epochs": 20,
-    "lr": 3e-4,
+    "epochs": 50,
+    "lr": 1e-4,
     "weight_decay": 1e-4,
-    "dropout": 0.4,
-    "patience": 5,
+    "dropout": 0.5,
+    "patience": 10,
     "batch_size": 8,
+}
+
+OPTIMIZED_HMDB_DEFAULTS = {
+    "epochs": 80,
+    "lr": 5e-4,
+    "weight_decay": 5e-5,
+    "dropout": 0.5,
+    "patience": 15,
+    "batch_size": 8,
+    "clip_length": 32,
+    "num_test_clips": 10,
+    "use_cosine_lr": True,
+    "use_focal_loss": False,
+    "use_photometric_aug": True,
+    "photometric_brightness_range": (0.75, 1.25),
+    "photometric_gamma_range": (0.75, 1.25),
+    "use_temporal_jitter": True,
+}
+
+OPTIMIZED_ARID_DEFAULTS = {
+    "epochs": 80,
+    "lr": 5e-5,
+    "weight_decay": 5e-5,
+    "dropout": 0.5,
+    "patience": 15,
+    "batch_size": 8,
+    "clip_length": 32,
+    "num_test_clips": 10,
+    "use_cosine_lr": True,
+    "use_focal_loss": True,
+    "focal_gamma": 2.0,
+    "focal_alpha": None,
+    "use_photometric_aug": True,
+    "photometric_brightness_range": (0.7, 1.3),
+    "photometric_gamma_range": (0.7, 1.3),
+    "use_temporal_jitter": True,
+    "two_stage_finetune": True,
+    "freeze_epochs": 10,
 }

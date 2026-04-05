@@ -163,11 +163,11 @@ def _apply_luminance_clahe(frame):
     return cv2.cvtColor(ycrcb, cv2.COLOR_YCrCb2RGB)
 
 
-def _apply_random_photometric(frame, rng: random.Random):
+def _apply_random_photometric(frame, rng: random.Random, brightness_range: tuple[float, float] = (0.85, 1.15), gamma_range: tuple[float, float] = (0.85, 1.15)):
     np = _require_numpy()
     frame = frame.astype(np.float32) / 255.0
-    brightness = rng.uniform(0.85, 1.15)
-    gamma = rng.uniform(0.85, 1.15)
+    brightness = rng.uniform(*brightness_range)
+    gamma = rng.uniform(*gamma_range)
     frame = np.clip(frame * brightness, 0.0, 1.0)
     frame = np.power(frame, gamma)
     return (np.clip(frame, 0.0, 1.0) * 255.0).astype(np.uint8)
@@ -180,6 +180,8 @@ def preprocess_frames(
     apply_random_photometric_aug: bool = False,
     horizontal_flip: bool = False,
     rng: random.Random | None = None,
+    photometric_brightness_range: tuple[float, float] = (0.85, 1.15),
+    photometric_gamma_range: tuple[float, float] = (0.85, 1.15),
 ):
     cv2 = _require_cv2()
     np = _require_numpy()
@@ -191,7 +193,7 @@ def preprocess_frames(
         if apply_clahe:
             current = _apply_luminance_clahe(current)
         if apply_random_photometric_aug:
-            current = _apply_random_photometric(current, rng)
+            current = _apply_random_photometric(current, rng, brightness_range=photometric_brightness_range, gamma_range=photometric_gamma_range)
         current = cv2.resize(current, (image_size, image_size), interpolation=cv2.INTER_LINEAR)
         if horizontal_flip:
             current = np.ascontiguousarray(current[:, ::-1, :])
@@ -210,6 +212,8 @@ def load_video_clip(
     apply_random_photometric_aug: bool = False,
     random_horizontal_flip: bool = False,
     rng: random.Random | None = None,
+    photometric_brightness_range: tuple[float, float] = (0.85, 1.15),
+    photometric_gamma_range: tuple[float, float] = (0.85, 1.15),
 ):
     np = _require_numpy()
     rng = rng or random.Random()
@@ -230,6 +234,8 @@ def load_video_clip(
         apply_random_photometric_aug=apply_random_photometric_aug,
         horizontal_flip=random_horizontal_flip and rng.random() < 0.5,
         rng=rng,
+        photometric_brightness_range=photometric_brightness_range,
+        photometric_gamma_range=photometric_gamma_range,
     )
     processed = processed.astype(np.float32) / 255.0
     mean = np.array([0.45, 0.45, 0.45], dtype=np.float32)

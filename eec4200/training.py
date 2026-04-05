@@ -34,7 +34,9 @@ def _require_training_stack():
         import seaborn as sns
         import torch
         import torch.nn as nn
+        import torch.nn.functional as F
         from sklearn.metrics import confusion_matrix, f1_score
+        from torch.optim.lr_scheduler import CosineAnnealingLR
         from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
         from tqdm.auto import tqdm
     except ImportError as exc:
@@ -47,13 +49,43 @@ def _require_training_stack():
         "sns": sns,
         "torch": torch,
         "nn": nn,
+        "F": F,
         "confusion_matrix": confusion_matrix,
         "f1_score": f1_score,
+        "CosineAnnealingLR": CosineAnnealingLR,
         "DataLoader": DataLoader,
         "Dataset": Dataset,
         "WeightedRandomSampler": WeightedRandomSampler,
         "tqdm": tqdm,
     }
+
+
+class FocalLoss:
+    def __new__(cls, gamma: float = 2.0, alpha: list[float] | None = None, num_classes: int = 8):
+        stack = _require_training_stack()
+        torch = stack["torch"]
+        F = stack["F"]
+
+        class _FocalLoss(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.gamma = gamma
+                if alpha is not None:
+                    self.alpha = torch.tensor(alpha, dtype=torch.float32)
+                else:
+                    self.alpha = None
+                self.num_classes = num_classes
+
+            def forward(self, logits, targets):
+                ce_loss = F.cross_entropy(logits, targets, reduction="none")
+                pt = torch.exp(-ce_loss)
+                focal_loss = (1 - pt) ** self.gamma * ce_loss
+                if self.alpha is not None:
+                    alpha_t = self.alpha[targets].to(logits.device)
+                    focal_loss = alpha_t * focal_loss
+                return focal_loss.mean()
+
+        return _FocalLoss()
 
 
 @dataclass
@@ -81,8 +113,17 @@ class ExperimentConfig:
     max_test_samples: int | None = None
     use_clahe: bool = False
     use_photometric_aug: bool = False
+    photometric_brightness_range: tuple[float, float] = (0.85, 1.15)
+    photometric_gamma_range: tuple[float, float] = (0.85, 1.15)
+    use_temporal_jitter: bool = False
     class_balanced_sampling: bool = False
     init_checkpoint: str | None = None
+    use_cosine_lr: bool = False
+    use_focal_loss: bool = False
+    focal_gamma: float = 2.0
+    focal_alpha: list[float] | None = None
+    two_stage_finetune: bool = False
+    freeze_epochs: int = 10
 
 
 def _resolve_device(requested: str):
@@ -114,6 +155,9 @@ class VideoClipDataset:
         seed: int,
         use_clahe: bool = False,
         use_photometric_aug: bool = False,
+        photometric_brightness_range: tuple[float, float] = (0.85, 1.15),
+        photometric_gamma_range: tuple[float, float] = (0.85, 1.15),
+        use_temporal_jitter: bool = False,
     ):
         stack = _require_training_stack()
         Dataset = stack["Dataset"]
@@ -128,6 +172,9 @@ class VideoClipDataset:
                 self.seed = seed
                 self.use_clahe = use_clahe
                 self.use_photometric_aug = use_photometric_aug
+                self.brightness_range = photometric_brightness_range
+                self.gamma_range = photometric_gamma_range
+                self.use_temporal_jitter = use_temporal_jitter
 
             def __len__(self):
                 return len(self.samples)
@@ -149,9 +196,11 @@ class VideoClipDataset:
                             image_size=self.image_size,
                             clip_index=0,
                             num_clips=1,
-                            jitter=self.training,
+                            jitter=self.training and self.use_temporal_jitter,
                             apply_clahe=self.use_clahe,
                             apply_random_photometric_aug=self.training and self.use_photometric_aug,
+                            photometric_brightness_range=self.brightness_range,
+                            photometric_gamma_range=self.gamma_range,
                             random_horizontal_flip=self.training,
                             rng=rng,
                         )
@@ -194,6 +243,9 @@ def _build_loader(samples, config: ExperimentConfig, training: bool):
         seed=config.seed,
         use_clahe=config.use_clahe,
         use_photometric_aug=config.use_photometric_aug,
+        photometric_brightness_range=config.photometric_brightness_range,
+        photometric_gamma_range=config.photometric_gamma_range,
+        use_temporal_jitter=config.use_temporal_jitter,
     )
 
     sampler = None
@@ -215,7 +267,7 @@ def _build_loader(samples, config: ExperimentConfig, training: bool):
     )
 
 
-def _epoch_pass(model, loader, optimizer, loss_fn, device, training: bool):
+def _epoch_pass(model, loader, optimizer, loss_fn, device, training: bool, scheduler=None):
     stack = _require_training_stack()
     torch = stack["torch"]
     tqdm = stack["tqdm"]
@@ -253,6 +305,9 @@ def _epoch_pass(model, loader, optimizer, loss_fn, device, training: bool):
             loss=f"{(total_loss / max(1, total_seen)):.4f}",
             acc=f"{(total_correct / max(1, total_seen)):.3f}",
         )
+
+    if training and scheduler is not None:
+        scheduler.step()
 
     return {
         "loss": total_loss / max(1, total_seen),
@@ -414,18 +469,46 @@ def _save_metrics(
     return metrics
 
 
-def _prepare_model_and_optimizer(config: ExperimentConfig, device):
+def _freeze_backbone(model):
+    stack = _require_training_stack()
+    for name, param in model.named_parameters():
+        if name.startswith("features"):
+            param.requires_grad = False
+
+
+def _unfreeze_backbone(model):
+    for param in model.parameters():
+        param.requires_grad = True
+
+
+def _prepare_model_and_optimizer(config: ExperimentConfig, device, freeze_backbone: bool = False):
     stack = _require_training_stack()
     torch = stack["torch"]
     nn = stack["nn"]
-    model = Lightweight3DCNN(num_classes=len(CANONICAL_CLASSES), dropout=0.4).to(device)
+    model = Lightweight3DCNN(num_classes=len(CANONICAL_CLASSES), dropout=0.5).to(device)
 
     if config.init_checkpoint:
         checkpoint = torch.load(config.init_checkpoint, map_location="cpu")
         model.load_state_dict(checkpoint["model_state"], strict=True)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=config.lr, weight_decay=config.weight_decay)
-    loss_fn = nn.CrossEntropyLoss()
+    if freeze_backbone:
+        _freeze_backbone(model)
+
+    optimizer = torch.optim.AdamW(
+        filter(lambda p: p.requires_grad, model.parameters()),
+        lr=config.lr,
+        weight_decay=config.weight_decay,
+    )
+
+    if config.use_focal_loss:
+        class_counts = None
+        if config.focal_alpha is not None:
+            loss_fn = FocalLoss(gamma=config.focal_gamma, alpha=config.focal_alpha, num_classes=len(CANONICAL_CLASSES))
+        else:
+            loss_fn = FocalLoss(gamma=config.focal_gamma, num_classes=len(CANONICAL_CLASSES))
+    else:
+        loss_fn = nn.CrossEntropyLoss()
+
     return model, optimizer, loss_fn
 
 
@@ -452,6 +535,7 @@ def run_supervised_experiment(
 ) -> dict[str, object]:
     stack = _require_training_stack()
     torch = stack["torch"]
+    CosineAnnealingLR = stack["CosineAnnealingLR"]
     output_dir = Path(config.output_dir)
     device = _resolve_device(config.device)
     seed_everything(config.seed)
@@ -466,7 +550,14 @@ def run_supervised_experiment(
 
     train_loader = _build_loader(train_samples, config, training=True)
     val_loader = _build_loader(val_samples, config, training=False)
-    model, optimizer, loss_fn = _prepare_model_and_optimizer(config, device)
+
+    # Two-stage fine-tuning: freeze backbone initially
+    freeze_backbone_flag = config.two_stage_finetune and config.freeze_epochs > 0
+    model, optimizer, loss_fn = _prepare_model_and_optimizer(config, device, freeze_backbone=freeze_backbone_flag)
+
+    scheduler = None
+    if config.use_cosine_lr:
+        scheduler = CosineAnnealingLR(optimizer, T_max=config.epochs, eta_min=config.lr * 0.01)
 
     history_records: list[dict[str, object]] = []
     best_val_accuracy = -math.inf
@@ -474,7 +565,18 @@ def run_supervised_experiment(
     epochs_without_improvement = 0
 
     for epoch in range(1, config.epochs + 1):
-        train_stats = _epoch_pass(model, train_loader, optimizer, loss_fn, device, training=True)
+        # Unfreeze backbone after freeze_epochs
+        if config.two_stage_finetune and epoch == config.freeze_epochs + 1:
+            _unfreeze_backbone(model)
+            optimizer = torch.optim.AdamW(
+                model.parameters(),
+                lr=config.lr * 0.1,
+                weight_decay=config.weight_decay,
+            )
+            if config.use_cosine_lr:
+                scheduler = CosineAnnealingLR(optimizer, T_max=config.epochs - epoch + 1, eta_min=config.lr * 0.001)
+
+        train_stats = _epoch_pass(model, train_loader, optimizer, loss_fn, device, training=True, scheduler=scheduler)
         val_stats = _epoch_pass(model, val_loader, optimizer, loss_fn, device, training=False)
         record = {
             "epoch": epoch,
@@ -545,6 +647,7 @@ def run_cross_dataset_evaluation(
     device: str = "auto",
     max_test_samples: int | None = None,
     seed: int = DEFAULT_RANDOM_SEED,
+    use_clahe: bool = False,
 ) -> dict[str, object]:
     stack = _require_training_stack()
     torch = stack["torch"]
@@ -552,7 +655,7 @@ def run_cross_dataset_evaluation(
     device_obj = _resolve_device(device)
     seed_everything(seed)
     checkpoint = torch.load(source_checkpoint, map_location="cpu")
-    model = Lightweight3DCNN(num_classes=len(CANONICAL_CLASSES), dropout=0.4).to(device_obj)
+    model = Lightweight3DCNN(num_classes=len(CANONICAL_CLASSES), dropout=0.5).to(device_obj)
     model.load_state_dict(checkpoint["model_state"], strict=True)
 
     test_samples = limit_samples_stratified(target_inventory.existing_samples("test"), max_test_samples, seed=seed)
@@ -563,7 +666,7 @@ def run_cross_dataset_evaluation(
         clip_length=clip_length,
         image_size=image_size,
         num_test_clips=num_test_clips,
-        use_clahe=False,
+        use_clahe=use_clahe,
     )
     metrics.update(
         {
@@ -599,6 +702,11 @@ def train_hmdb(
     max_train_samples: int | None = None,
     max_val_samples: int | None = None,
     max_test_samples: int | None = None,
+    clip_length: int = DEFAULT_CLIP_LENGTH,
+    num_test_clips: int = DEFAULT_TEST_CLIPS,
+    use_cosine_lr: bool = False,
+    use_photometric_aug: bool = False,
+    use_temporal_jitter: bool = False,
 ) -> dict[str, object]:
     inventories = load_all_inventories(Path(data_root))
     config = ExperimentConfig(
@@ -617,9 +725,14 @@ def train_hmdb(
         num_workers=num_workers,
         seed=seed,
         device=device,
+        clip_length=clip_length,
+        num_test_clips=num_test_clips,
         max_train_samples=max_train_samples,
         max_val_samples=max_val_samples,
         max_test_samples=max_test_samples,
+        use_cosine_lr=use_cosine_lr,
+        use_photometric_aug=use_photometric_aug,
+        use_temporal_jitter=use_temporal_jitter,
     )
     return run_supervised_experiment(inventories["hmdb51"], config)
 
@@ -639,6 +752,18 @@ def train_arid(
     max_train_samples: int | None = None,
     max_val_samples: int | None = None,
     max_test_samples: int | None = None,
+    clip_length: int = DEFAULT_CLIP_LENGTH,
+    num_test_clips: int = DEFAULT_TEST_CLIPS,
+    use_cosine_lr: bool = False,
+    use_focal_loss: bool = False,
+    focal_gamma: float = 2.0,
+    focal_alpha: list[float] | None = None,
+    use_photometric_aug: bool = True,
+    photometric_brightness_range: tuple[float, float] = (0.7, 1.3),
+    photometric_gamma_range: tuple[float, float] = (0.7, 1.3),
+    use_temporal_jitter: bool = True,
+    two_stage_finetune: bool = False,
+    freeze_epochs: int = 10,
 ) -> dict[str, object]:
     inventories = load_all_inventories(Path(data_root))
     config = ExperimentConfig(
@@ -657,12 +782,22 @@ def train_arid(
         num_workers=num_workers,
         seed=seed,
         device=device,
+        clip_length=clip_length,
+        num_test_clips=num_test_clips,
         max_train_samples=max_train_samples,
         max_val_samples=max_val_samples,
         max_test_samples=max_test_samples,
         use_clahe=True,
-        use_photometric_aug=True,
-        class_balanced_sampling=True,
+        use_cosine_lr=use_cosine_lr,
+        use_focal_loss=use_focal_loss,
+        focal_gamma=focal_gamma,
+        focal_alpha=focal_alpha,
+        use_photometric_aug=use_photometric_aug,
+        photometric_brightness_range=photometric_brightness_range,
+        photometric_gamma_range=photometric_gamma_range,
+        use_temporal_jitter=use_temporal_jitter,
+        two_stage_finetune=two_stage_finetune,
+        freeze_epochs=freeze_epochs,
         init_checkpoint=str(init_checkpoint),
     )
     return run_supervised_experiment(inventories["arid"], config)
